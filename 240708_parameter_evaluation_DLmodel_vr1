@@ -1,0 +1,55 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_squared_error, r2_score
+from scipy.stats import pearsonr
+
+# Prediction on test data
+X_test_reconstructed = model.predict(X_test)
+
+# Calculation of mean squared error (MSE)
+mse = mean_squared_error(X_test, X_test_reconstructed)
+print(f"Mean Squared Error: {mse}")
+
+# Calculation of R2 score
+r2 = r2_score(X_test, X_test_reconstructed)
+print(f"R2 Score: {r2}")
+
+# Calculation of the Pearson correlation coefficient
+correlation, _ = pearsonr(X_test.flatten(), X_test_reconstructed.flatten())
+print(f"Pearson Correlation Coefficient: {correlation}")
+
+# Scatter plots of actual and predicted values
+plt.figure(figsize=(10, 6))
+plt.scatter(X_test.flatten(), X_test_reconstructed.flatten(), alpha=0.5)
+plt.plot([X_test.min(), X_test.max()], [X_test.min(), X_test.max()], 'r--', lw=2)
+plt.xlabel('Actual Values')
+plt.ylabel('Predicted Values')
+plt.title('Actual vs Predicted Values')
+plt.show()
+
+# Distribution of reconstruction errors per feature
+reconstruction_errors = np.mean(np.abs(X_test - X_test_reconstructed), axis=0)
+plt.figure(figsize=(10, 6))
+plt.bar(range(len(reconstruction_errors)), reconstruction_errors)
+plt.xlabel('Feature Index')
+plt.ylabel('Mean Absolute Error')
+plt.title('Reconstruction Error by Feature')
+plt.show()
+
+# Distribution of sleep scores
+sleep_scores = calculate_sleep_score(X_test)
+plt.figure(figsize=(10, 6))
+plt.hist(sleep_scores, bins=20)
+plt.xlabel('Sleep Score')
+plt.ylabel('Frequency')
+plt.title('Distribution of Sleep Scores')
+plt.show()
+
+# Importance of the feature (absolute value of the weights)
+feature_importance = np.abs(model.layers[-1].get_weights()[0])
+plt.figure(figsize=(10, 6))
+plt.bar(range(feature_importance.shape[1]), np.mean(feature_importance, axis=0))
+plt.xlabel('Feature Index')
+plt.ylabel('Importance')
+plt.title('Feature Importance')
+plt.show()
