@@ -1,0 +1,83 @@
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from sklearn.preprocessing import RobustScaler
+import os
+
+# Setting the file path
+target_file = '/content/drive/My Drive/SympaFit/path'
+
+# Import and pre-processing CSV files
+df = pd.read_csv(target_file)
+df['datetime'] = pd.to_datetime(df['time'], errors='coerce')
+df['glucose'] = pd.to_numeric(df['glucose'], errors='coerce')
+df = df.dropna(subset=['datetime', 'glucose'])
+
+# Add date column
+df['date'] = df['datetime'].dt.date
+
+def extract_features(day_data):
+    night_data = day_data[(day_data['datetime'].dt.time >= pd.to_datetime('00:00:00').time()) &
+                          (day_data['datetime'].dt.time < pd.to_datetime('06:00:00').time())]
+
+    if len(night_data) > 0:
+        night_mean = night_data['glucose'].mean()
+        night_std = night_data['glucose'].std()
+        night_min = night_data['glucose'].min()
+        night_max = night_data['glucose'].max()
+
+        return np.array([night_mean, night_std, night_min, night_max])
+    else:
+        return None
+
+# Extract features for each day
+daily_features = []
+dates = []
+
+for date, day_data in df.groupby('date'):
+    features = extract_features(day_data)
+    if features is not None:
+        daily_features.append(features)
+        dates.append(date)
+
+daily_features = np.array(daily_features)
+
+print(f"processed length of date: {len(dates)}")
+print(f"start day: {dates[0]}")
+print(f"end day: {dates[-1]}")
+
+# Normalisation of features
+scaler = RobustScaler()
+normalized_features = scaler.fit_transform(daily_features)
+
+# Define and train models
+input_dim = normalized_features.shape[1]
+model = tf.keras.Sequential([
+    tf.keras.layers.Dense(16, activation="relu", input_shape=(input_dim,)),
+    tf.keras.layers.Dense(8, activation="relu"),
+    tf.keras.layers.Dense(16, activation="relu"),
+    tf.keras.layers.Dense(input_dim, activation="linear")
+])
+
+model.compile(optimizer='adam', loss='mse')
+model.fit(normalized_features, normalized_features, epochs=100, batch_size=32, verbose=0)
+
+# Sleep score calculation function
+def calculate_sleep_score(features):
+    reconstructed = model.predict(features)
+    mse = np.mean(np.power(features - reconstructed, 2), axis=1)
+    sleep_score = 100 * (1 - np.tanh(mse))
+    return sleep_score
+
+# Calculation of sleep scores
+sleep_scores = calculate_sleep_score(normalized_features)
+
+# Display of results
+print("\ndate,score")
+for date, score in zip(dates, sleep_scores):
+    print(f"{date.strftime('%Y/%m/%d')},{score:.2f}")
+
+# Save the results in a CSV file
+result_df = pd.DataFrame({'date': [d.strftime('%Y/%m/%d') for d in dates], 'score': sleep_scores})
+result_df.to_csv('/content/drive/My Drive/path/sleep_scores.csv', index=False)
+print("\The results were saved in the 'sleep_scores.csv' file")
