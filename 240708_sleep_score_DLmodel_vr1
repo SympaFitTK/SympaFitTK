@@ -1,0 +1,145 @@
+#Deep learning models (mean, undulation, concurrence), weighting, model architecture
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from sklearn.preprocessing import RobustScaler
+from sklearn.model_selection import train_test_split
+import os
+from google.colab import drive
+import matplotlib.pyplot as plt
+
+# Mount Google Drive
+drive.mount('/content/drive')
+# folder path
+folder_path = "/content/drive/My Drive/SympaFit/path/"
+
+#Feature engineering
+def extract_features(df):
+    features = []
+    weights = np.array([100, 50, 90, 80])  # weight of a, b, c, d
+    weights = weights / np.sum(weights)  # Normalisation of weight
+
+    for date in df['datetime'].dt.date.unique():
+        day_data = df[df['datetime'].dt.date == date]
+        night_data = day_data[(day_data['datetime'].dt.time >= pd.to_datetime('00:00:00').time()) &
+                              (day_data['datetime'].dt.time < pd.to_datetime('06:00:00').time())]
+
+        if len(night_data) > 0:
+            # a. Average of 0-6 clock
+            night_mean = night_data['glucose'].mean()
+
+            if night_mean >= 75:
+                # Calculate scores in the range 75-140 mg/dL
+                mean_score = max(1 - (night_mean - 75) / 65 * 0.25, 0)  # 0.75 at 95 mg/dL, 0 at 140 mg/dL
+            elif 65 <= night_mean < 75:
+                # Calculate scores in the range 65-75 mg/dL
+                mean_score = 0.8 + (night_mean - 65) / 10 * 0.2
+            else:
+                # in case of less than 65 mg/dL
+                mean_score = max(night_mean / 50 * 0.8, 0)  # Set score to 0 at 50 mg/dL
+
+            # Normalise scores to a range of 0-1
+            mean_score = max(0, min(1, mean_score))
+
+             # b. Number of times with mean ± 10 mg/dL at 0-3 and 3-6 hours
+            early_night_data = night_data[night_data['datetime'].dt.time < pd.to_datetime('03:00:00').time()]
+            late_night_data = night_data[night_data['datetime'].dt.time >= pd.to_datetime('03:00:00').time()]
+            
+            early_night_mean = early_night_data['glucose'].mean()
+            late_night_mean = late_night_data['glucose'].mean()
+            
+            early_out_of_range = ((early_night_data['glucose'] < early_night_mean - 10) |
+                                  (early_night_data['glucose'] > early_night_mean + 10)).sum()
+            late_out_of_range = ((late_night_data['glucose'] < late_night_mean - 10) |
+                                 (late_night_data['glucose'] > late_night_mean + 10)).sum()
+            
+            total_out_of_range = early_out_of_range + late_out_of_range
+            fluctuation_score = min(total_out_of_range / (len(night_data) / 2), 1)
+
+            # c. Number of times <70 mg/dL between 0-2 o'clock
+            early_night_dips = ((night_data['datetime'].dt.time >= pd.to_datetime('00:00:00').time()) &
+                                (night_data['datetime'].dt.time < pd.to_datetime('02:00:00').time()) &
+                                (night_data['glucose'] < 70)).sum()
+            early_night_score = min(early_night_dips / 3, 1)  # Assuming a maximum of three times
+
+            # d. 2-6時の間に<70 mg/dLを示した回数
+            late_night_dips = ((night_data['datetime'].dt.time >= pd.to_datetime('02:00:00').time()) &
+                               (night_data['datetime'].dt.time < pd.to_datetime('06:00:00').time()) &
+                               (night_data['glucose'] < 70)).sum()
+            late_night_score = min(late_night_dips / 6, 1)  # Assuming a maximum of six times
+
+            # Weighted features
+            weighted_features = np.array([mean_score, fluctuation_score, early_night_score, late_night_score]) * weights
+
+            features.append(weighted_features)
+
+    return np.array(features)
+
+all_features = []
+csv_files = [f for f in os.listdir(folder_path) if f.endswith('.csv')]
+
+for file in csv_files:
+    try:
+        df = pd.read_csv(os.path.join(folder_path, file))
+        df['datetime'] = pd.to_datetime(df['time'], errors='coerce')
+        df['glucose'] = pd.to_numeric(df['glucose'], errors='coerce')
+        df = df.dropna(subset=['datetime', 'glucose'])
+
+        features = extract_features(df)
+        if features.size > 0:
+            all_features.extend(features)
+    except Exception as e:
+        print(f"Error processing file {file}: {str(e)}")
+
+all_features = np.array(all_features)
+
+# Normalisation of data
+scaler = RobustScaler()
+normalized_features = scaler.fit_transform(all_features)
+
+# Elimination of outliers (more stringent standards)
+def remove_outliers(features, z_threshold=3):
+    z_scores = np.abs((features - np.mean(features, axis=0)) / np.std(features, axis=0))
+    return features[(z_scores < z_threshold).all(axis=1)]
+
+normalized_features = remove_outliers(normalized_features)
+
+X_train, X_test = train_test_split(normalized_features, test_size=0.2, random_state=42)
+
+input_dim = X_train.shape[1]
+
+# Modified model initialisation method
+initializer = tf.keras.initializers.HeNormal()
+
+model = tf.keras.Sequential([
+    tf.keras.layers.Dense(32, activation="relu", input_shape=(input_dim,), kernel_initializer=initializer),
+    tf.keras.layers.Dense(16, activation="relu", kernel_initializer=initializer),
+    tf.keras.layers.Dense(8, activation="relu", kernel_initializer=initializer),
+    tf.keras.layers.Dense(16, activation="relu", kernel_initializer=initializer),
+    tf.keras.layers.Dense(input_dim, activation="linear", kernel_initializer=initializer)
+])
+
+# Adjusting the learning rate
+optimizer = tf.keras.optimizers.Adam(learning_rate=0.0005, clipnorm=0.5)
+model.compile(optimizer=optimizer, loss='mse')
+
+early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=30, restore_best_weights=True)
+
+history = model.fit(X_train, X_train, epochs=2000, batch_size=64, shuffle=True,
+                    validation_data=(X_test, X_test), verbose=1, callbacks=[early_stopping])
+
+plt.figure(figsize=(10, 6))
+plt.plot(history.history['loss'], label='Training Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.title('Model Loss')
+plt.ylabel('Loss')
+plt.xlabel('Epoch')
+plt.legend()
+plt.show()
+
+def calculate_sleep_score(features):
+    normalized_features = scaler.transform(features)
+    reconstructed = model.predict(normalized_features)
+    mse = np.mean(np.power(normalized_features - reconstructed, 2), axis=1)
+    sleep_score = 100 * (1 - np.tanh(mse * 2))  # Adjustment of scaling factors
+    return sleep_score
